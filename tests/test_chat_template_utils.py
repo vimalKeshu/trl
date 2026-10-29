@@ -463,6 +463,67 @@ class TestAddResponseSchema:
         parsed = parse_response(processor.tokenizer, text[len(prefix) :], prefix=prefix)
         assert parsed == expected
 
+    @pytest.mark.parametrize(
+        "tokenizer_name",
+        [
+            pytest.param(
+                "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+                id="qwen2.5",
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-Qwen3ForCausalLM-Instruct-2507",
+                id="qwen3-instruct-2507",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("use_training_template", [False, True], ids=["original", "training"])
+    @pytest.mark.parametrize("save_reload", [False, True], ids=["in-memory", "reloaded"])
+    def test_add_response_schema_training_template(
+        self, tokenizer_name, use_training_template, save_reload, tmp_path
+    ):
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+
+        if use_training_template:
+            training_template = get_training_chat_template(tokenizer)
+            assert training_template is not None
+            tokenizer.chat_template = training_template
+
+        expected_chat_template = tokenizer.chat_template
+
+        # Save before installing a parser, as an SFT tokenizer need not have one.
+        if save_reload:
+            tokenizer.save_pretrained(tmp_path)
+            tokenizer = AutoTokenizer.from_pretrained(tmp_path)
+
+        add_response_schema(tokenizer)
+        assert tokenizer.chat_template == expected_chat_template
+
+        messages = [
+            {"role": "user", "content": "What is 3 times 4?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "multiply",
+                            "arguments": {"a": 3, "b": 4},
+                        },
+                    }
+                ],
+            },
+        ]
+        prefix = tokenizer.apply_chat_template(
+            messages[:1], add_generation_prompt=True, tokenize=True, return_dict=True
+        ).input_ids
+        full = tokenizer.apply_chat_template(
+            messages, tokenize=True, return_dict=True
+        ).input_ids
+
+        parsed = parse_response(tokenizer, full[len(prefix) :], prefix=prefix)
+        assert parsed == messages[-1]
+        
 
 class TestSupportsToolCalling:
     @pytest.mark.parametrize(
