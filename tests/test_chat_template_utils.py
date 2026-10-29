@@ -474,14 +474,71 @@ class TestAddResponseSchema:
                 "trl-internal-testing/tiny-Qwen3ForCausalLM-Instruct-2507",
                 id="qwen3-instruct-2507",
             ),
+            pytest.param(
+                "trl-internal-testing/tiny-Glm4MoeForCausalLM",
+                id="glm4moe",
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-GptOssForCausalLM",
+                id="gptoss",
+                marks=pytest.mark.xfail(
+                    Version(transformers.__version__) < Version("5.5.0"),
+                    reason="Upstream bug in response parsing (see #5753; fixed in transformers#45166)",
+                    strict=True,
+                ),
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-NemotronHForCausalLM-nano",
+                id="nemotron_3_nano",
+                marks=pytest.mark.skipif(
+                    Version(transformers.__version__) < Version("5.3.0"),
+                    reason="Nemotron 3 tokenizer requires transformers>=5.3.0",
+                ),
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-NemotronHForCausalLM-super",
+                id="nemotron_3_super",
+                marks=pytest.mark.skipif(
+                    Version(transformers.__version__) < Version("5.3.0"),
+                    reason="Nemotron 3 tokenizer requires transformers>=5.3.0",
+                ),
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-NemotronHForCausalLM-ultra",
+                id="nemotron_3_ultra",
+                marks=pytest.mark.skipif(
+                    Version(transformers.__version__) < Version("5.3.0"),
+                    reason="Nemotron 3 tokenizer requires transformers>=5.3.0",
+                ),
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-NemotronHForCausalLM-3.5-lightning",
+                id="nemotron_3_5_lightning",
+                marks=pytest.mark.skipif(
+                    Version(transformers.__version__) < Version("5.3.0"),
+                    reason="Nemotron 3.5 tokenizer requires transformers>=5.3.0",
+                ),
+            ),
+            pytest.param(
+                ("trl-internal-testing/tiny-Lfm2ForCausalLM", lfm2_v2_chat_template),
+                id="lfm2-v2",
+                marks=pytest.mark.skipif(
+                    not _SUPPORTS_RESPONSE_TEMPLATE,
+                    reason="LFM2 response parsing requires transformers>=5.13",
+                ),
+            ),
         ],
     )
     @pytest.mark.parametrize("use_training_template", [False, True], ids=["original", "training"])
     @pytest.mark.parametrize("save_reload", [False, True], ids=["in-memory", "reloaded"])
+    @pytest.mark.parametrize("with_tool_call", [False, True], ids=["text", "tool-call"])
     def test_add_response_schema_training_template(
-        self, tokenizer_name, use_training_template, save_reload, tmp_path
+        self, tokenizer_name, use_training_template, save_reload, with_tool_call, tmp_path
     ):
+        tokenizer_name, chat_template = tokenizer_name if isinstance(tokenizer_name, tuple) else (tokenizer_name, None)
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        if chat_template is not None:
+            tokenizer.chat_template = chat_template
 
         if use_training_template:
             training_template = get_training_chat_template(tokenizer)
@@ -500,30 +557,168 @@ class TestAddResponseSchema:
 
         messages = [
             {"role": "user", "content": "What is 3 times 4?"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "multiply",
-                            "arguments": {"a": 3, "b": 4},
-                        },
-                    }
-                ],
-            },
+            {"role": "assistant", "content": "12"},
         ]
+        if with_tool_call:
+            messages[-1]["content"] = ""
+            messages[-1]["tool_calls"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "multiply",
+                        "arguments": {"a": 3, "b": 4},
+                    },
+                }
+            ]
         prefix = tokenizer.apply_chat_template(
             messages[:1], add_generation_prompt=True, tokenize=True, return_dict=True
         ).input_ids
-        full = tokenizer.apply_chat_template(
-            messages, tokenize=True, return_dict=True
-        ).input_ids
+        full = tokenizer.apply_chat_template(messages, tokenize=True, return_dict=True).input_ids
 
-        parsed = parse_response(tokenizer, full[len(prefix) :], prefix=prefix)
+        parsed = parse_response(tokenizer, full[len(prefix) :], prefix=prefix, tools=[multiply])
         assert parsed == messages[-1]
-        
+
+    @pytest.mark.parametrize(
+        "processor_name",
+        [
+            pytest.param(
+                "trl-internal-testing/tiny-Qwen3VLForConditionalGeneration",
+                id="qwen3_vl",
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink",
+                id="qwen35-nothink",
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-Think",
+                id="qwen35-think",
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-Qwen3_5MoeForConditionalGeneration-3.6",
+                id="qwen36",
+            ),
+            pytest.param(
+                "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-3.8",
+                id="qwen38",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("use_training_template", [False, True], ids=["original", "training"])
+    @pytest.mark.parametrize("save_reload", [False, True], ids=["in-memory", "reloaded"])
+    @pytest.mark.parametrize("with_tool_call", [False, True], ids=["text", "tool-call"])
+    @require_vision
+    def test_add_response_schema_training_template_vlm(
+        self, processor_name, use_training_template, save_reload, with_tool_call, tmp_path
+    ):
+        processor = AutoProcessor.from_pretrained(processor_name)
+
+        if use_training_template:
+            training_template = get_training_chat_template(processor)
+            assert training_template is not None
+            processor.chat_template = training_template
+
+        expected_chat_template = processor.chat_template
+
+        # Save before installing a parser, as an SFT processor need not have one.
+        if save_reload:
+            processor.save_pretrained(tmp_path)
+            processor = AutoProcessor.from_pretrained(tmp_path)
+
+        add_response_schema(processor)
+        assert processor.chat_template == expected_chat_template
+
+        messages = [
+            {"role": "user", "content": "What is 3 times 4?"},
+            {"role": "assistant", "content": "12"},
+        ]
+
+        if with_tool_call:
+            messages[-1]["content"] = ""
+            messages[-1]["tool_calls"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "multiply",
+                        "arguments": {"a": 3, "b": 4},
+                    },
+                }
+            ]
+
+        expected = messages[-1]
+        messages = prepare_multimodal_messages(messages)
+
+        # VLM processors return batched token IDs.
+        prefix = processor.apply_chat_template(
+            messages[:1], add_generation_prompt=True, tokenize=True, return_dict=True
+        ).input_ids[0]
+        full = processor.apply_chat_template(messages, tokenize=True, return_dict=True).input_ids[0]
+
+        parsed = parse_response(processor.tokenizer, full[len(prefix) :], prefix=prefix, tools=[multiply])
+        assert parsed == expected
+
+    @pytest.mark.parametrize(
+        "completion, expected",
+        [
+            pytest.param(
+                "12",
+                {"role": "assistant", "content": "12"},
+                id="content",
+            ),
+            pytest.param(
+                "</think>\n12",
+                {"role": "assistant", "content": "12"},
+                id="empty-reasoning",
+            ),
+            pytest.param(
+                "3 * 4 = 12.</think>\n12",
+                {
+                    "role": "assistant",
+                    "reasoning_content": "3 * 4 = 12.",
+                    "content": "12",
+                },
+                id="reasoning",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("use_training_template", [False, True], ids=["original", "training"])
+    @pytest.mark.parametrize("save_reload", [False, True], ids=["in-memory", "reloaded"])
+    @pytest.mark.skipif(
+        not _SUPPORTS_RESPONSE_TEMPLATE,
+        reason="DeepSeek-R1-Distill response parsing requires transformers>=5.13",
+    )
+    def test_add_response_schema_training_template_deepseek(
+        self, completion, expected, use_training_template, save_reload, tmp_path
+    ):
+        tokenizer = AutoTokenizer.from_pretrained("trl-internal-testing/tiny-Qwen2ForCausalLM-R1-Distill")
+
+        if use_training_template:
+            training_template = get_training_chat_template(tokenizer)
+            assert training_template is not None
+            tokenizer.chat_template = training_template
+
+        expected_chat_template = tokenizer.chat_template
+
+        # Save before installing a parser, as an SFT tokenizer need not have one.
+        if save_reload:
+            tokenizer.save_pretrained(tmp_path)
+            tokenizer = AutoTokenizer.from_pretrained(tmp_path)
+
+        add_response_schema(tokenizer)
+        assert tokenizer.chat_template == expected_chat_template
+
+        # The prompt prefills <think>; the original template strips reasoning
+        # from completed assistant messages, so tokenize the completion separately.
+        prefix = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "What is 3 times 4?"}],
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+        ).input_ids
+        response = tokenizer(completion + tokenizer.eos_token, add_special_tokens=False).input_ids
+
+        parsed = parse_response(tokenizer, response, prefix=prefix)
+        assert parsed == expected
+
 
 class TestSupportsToolCalling:
     @pytest.mark.parametrize(
